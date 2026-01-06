@@ -3,3 +3,6 @@ uvicorn
 psycopg2-binary
 paho-mqtt
 python-dotenv
+sqlalchemy
+jinja2
+python-multipart

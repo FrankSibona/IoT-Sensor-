@@ -114,5 +114,16 @@ class Telemetry(Base):
     valve_feed: Mapped[float | None] = mapped_column(Float, nullable=True)     # 0/1
     pump_low: Mapped[float | None] = mapped_column(Float, nullable=True)       # 0/1
     pump_high: Mapped[float | None] = mapped_column(Float, nullable=True)      # 0/1
+ 
 
+from sqlalchemy.types import JSON
+
+class Measurement(Base):
+    __tablename__ = "measurements"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.device_id"), index=True)
+    
+    # Aquí guardamos el JSON crudo completo, perfecto para Grafana
+    data: Mapped[dict] = mapped_column(JSON, nullable=True)
 
