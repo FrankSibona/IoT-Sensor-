@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2>Alarmas - {{ dev.device_id }}</h2>
+<div style="margin-bottom:10px;">
+  <a href="/devices">⬅ Volver</a>
+</div>
+
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+  <thead>
+    <tr>
+      <th>Fecha (UTC)</th>
+      <th>Código</th>
+      <th>Severidad</th>
+      <th>Mensaje</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in alarms %}
+    <tr>
+      <td>{{ a.ts }}</td>
+      <td><strong>{{ a.code }}</strong></td>
+      <td>{{ a.severity }}</td>
+      <td>{{ a.message }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if not alarms %}
+<p>No hay alarmas registradas.</p>
+{% endif %}
+
+{% endblock %}

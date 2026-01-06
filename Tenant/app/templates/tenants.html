@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tenants (Empresas)</h2>
+
+<div class="card">
+  <form method="post" action="/tenants">
+    <label>Nombre empresa</label>
+    <input name="name" placeholder="Osmosis San Luis" required>
+    <button type="submit">Crear tenant</button>
+  </form>
+</div>
+
+<table>
+  <thead><tr><th>ID</th><th>Nombre</th></tr></thead>
+  <tbody>
+    {% for t in tenants %}
+      <tr><td>{{ t.id }}</td><td>{{ t.name }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

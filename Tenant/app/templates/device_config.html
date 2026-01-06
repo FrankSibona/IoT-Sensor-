@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Ficha del equipo: {{ dev.device_id }}</h2>
+<p class="muted">Topic: <code>{{ dev.topic_prefix }}</code></p>
+
+<div class="card">
+  <form method="post" action="/devices/{{ dev.device_id }}/config">
+    <h3>Caudales (L/h)</h3>
+    <div class="row">
+      <div class="card">
+        <b>Permeado</b>
+        <label>Nominal</label><input name="flow_perm_nom" type="number" step="0.01" value="{{ cfg.flow_perm_nom }}">
+        <label>Mínimo</label><input name="flow_perm_min" type="number" step="0.01" value="{{ cfg.flow_perm_min }}">
+        <label>Máximo</label><input name="flow_perm_max" type="number" step="0.01" value="{{ cfg.flow_perm_max }}">
+      </div>
+      <div class="card">
+        <b>Rechazo</b>
+        <label>Nominal</label><input name="flow_rej_nom" type="number" step="0.01" value="{{ cfg.flow_rej_nom }}">
+        <label>Mínimo</label><input name="flow_rej_min" type="number" step="0.01" value="{{ cfg.flow_rej_min }}">
+        <label>Máximo</label><input name="flow_rej_max" type="number" step="0.01" value="{{ cfg.flow_rej_max }}">
+      </div>
+    </div>
+
+    <h3>Presión intermembrana (bar)</h3>
+    <div class="row">
+      <div class="card">
+        <label>Nominal</label><input name="p_inter_nom" type="number" step="0.01" value="{{ cfg.p_inter_nom }}">
+        <label>Mínimo</label><input name="p_inter_min" type="number" step="0.01" value="{{ cfg.p_inter_min }}">
+        <label>Máximo</label><input name="p_inter_max" type="number" step="0.01" value="{{ cfg.p_inter_max }}">
+      </div>
+      <div class="card">
+        <label>Umbral transductor (bar) (0 vs 0.2)</label>
+        <input name="p_transducer_threshold" type="number" step="0.01" value="{{ cfg.p_transducer_threshold }}">
+      </div>
+    </div>
+
+    <h3>Conductividad permeado (uS/cm)</h3>
+    <div class="row">
+      <div class="card">
+        <label>Nominal</label><input name="cond_perm_nom" type="number" step="0.01" value="{{ cfg.cond_perm_nom }}">
+        <label>Máximo</label><input name="cond_perm_max" type="number" step="0.01" value="{{ cfg.cond_perm_max }}">
+      </div>
+      <div class="card">
+        <label>Alarma alta (%)</label><input name="cond_high_pct" type="number" step="0.1" value="{{ cfg.cond_high_pct }}">
+        <label>Ignorar al inicio (min)</label><input name="cond_ignore_minutes" type="number" step="1" value="{{ cfg.cond_ignore_minutes }}">
+      </div>
+    </div>
+
+    <h3>Tiempos</h3>
+    <div class="row">
+      <div class="card">
+        <label>Espera presostato inicio (s)</label>
+        <input name="start_wait_presostat_s" type="number" step="1" value="{{ cfg.start_wait_presostat_s }}">
+        <label>Estabilización presión (s)</label>
+        <input name="stabilize_pressure_s" type="number" step="1" value="{{ cfg.stabilize_pressure_s }}">
+      </div>
+      <div class="card">
+        <label>Presión alta instantánea (%)</label>
+        <input name="high_pressure_instant_pct" type="number" step="0.1" value="{{ cfg.high_pressure_instant_pct }}">
+        <label>Sostenido (s)</label>
+        <input name="high_pressure_instant_s" type="number" step="1" value="{{ cfg.high_pressure_instant_s }}">
+      </div>
+    </div>
+
+    <button type="submit">Guardar ficha</button>
+  </form>
+</div>
+{% endblock %}

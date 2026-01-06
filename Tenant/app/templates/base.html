@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ title if title else "RO Diagnostic Admin" }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    nav a { margin-right: 12px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f5f5f5; text-align: left; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; padding: 16px; border-radius: 8px; min-width: 320px; flex: 1; }
+    label { display:block; margin-top: 10px; }
+    input, select { width: 100%; padding: 8px; margin-top: 4px; }
+    button { padding: 10px 14px; margin-top: 14px; }
+    .muted { color: #666; }
+    .badge { padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+    .PENDING { background:#fff3cd; }
+    .ACTIVE { background:#d1e7dd; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/devices">Equipos</a>
+    <a href="/devices/new">Alta equipo</a>
+    <a href="/tenants">Tenants (Empresas)</a>
+  </nav>
+  <hr/>
+  {% block content %}{% endblock %}
+</body>
+</html>

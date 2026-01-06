@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h2>Telemetría - {{ dev.device_id }}</h2>
+<div style="margin-bottom:10px;">
+  <a href="/devices">⬅ Volver</a>
+</div>
+
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+  <thead>
+    <tr>
+      <th>Fecha (UTC)</th>
+      <th>Presostato</th>
+      <th>P inter</th>
+      <th>Q perm</th>
+      <th>Q rechazo</th>
+      <th>Cond perm</th>
+      <th>Float</th>
+      <th>EV</th>
+      <th>B baja</th>
+      <th>B alta</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.ts }}</td>
+      <td>{{ r.presostat_low }}</td>
+      <td>{{ r.pressure_inter }}</td>
+      <td>{{ r.flow_perm }}</td>
+      <td>{{ r.flow_reject }}</td>
+      <td>{{ r.conductivity_perm }}</td>
+      <td>{{ r.float_call }}</td>
+      <td>{{ r.valve_feed }}</td>
+      <td>{{ r.pump_low }}</td>
+      <td>{{ r.pump_high }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if not rows %}
+<p>No hay telemetría registrada.</p>
+{% endif %}
+
+{% endblock %}

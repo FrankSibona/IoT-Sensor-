@@ -1,0 +1,165 @@
+{# app/templates/devices.html  (REEMPLAZAR COMPLETO) #}
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Equipos</h2>
+
+<div style="margin-bottom: 10px;">
+  <a href="/devices/new">➕ Nuevo equipo</a>
+</div>
+
+<table border="1" cellpadding="6" cellspacing="0" width="100%">
+  <thead>
+    <tr>
+      <th>Device ID</th>
+      <th>Empresa</th>
+      <th>Status</th>
+      <th>Último reporte (UTC)</th>
+      <th>Hace</th>
+      <th>Último ACK</th>
+      <th>Acciones</th>
+      <th>Comandos</th>
+    </tr>
+  </thead>
+
+  <tbody>
+    {% for d in devices %}
+    <tr>
+      <td><strong>{{ d.device_id }}</strong></td>
+
+      <td>
+        {% set tenant = tenants_by_id.get(d.tenant_id) %}
+        {{ tenant.name if tenant else "—" }}
+      </td>
+
+      <td>
+        {% if d.status == "ONLINE" %}
+          <span style="color: green; font-weight: bold;">ONLINE</span>
+        {% elif d.status == "OFFLINE" %}
+          <span style="color: red; font-weight: bold;">OFFLINE</span>
+        {% else %}
+          <span style="color: #444;">{{ d.status or "—" }}</span>
+        {% endif %}
+      </td>
+
+      <td>
+        {% if d.last_seen %}{{ d.last_seen }}{% else %}—{% endif %}
+      </td>
+
+      <td>
+        {% set s = seconds_since_seen.get(d.device_id) %}
+        {% if s is none %}
+          —
+        {% elif s < 60 %}
+          {{ s }} s
+        {% elif s < 3600 %}
+          {{ (s // 60) }} min
+        {% else %}
+          {{ (s // 3600) }} h {{ ((s % 3600) // 60) }} min
+        {% endif %}
+      </td>
+
+      <td style="max-width: 320px;">
+        {% set ack = last_ack_by_device.get(d.device_id) %}
+        {% if ack %}
+          <div style="font-size: 12px;">
+            <div><strong>{{ ack.ts }}</strong></div>
+            <div style="color:#333;">{{ ack.message }}</div>
+          </div>
+        {% else %}
+          —
+        {% endif %}
+      </td>
+
+      <td style="white-space: nowrap;">
+        <a href="/devices/{{ d.device_id }}/config">⚙ Config</a>
+        &nbsp;|&nbsp;
+        <a href="/devices/{{ d.device_id }}/telemetry">📈 Telemetría</a>
+        &nbsp;|&nbsp;
+        <a href="/devices/{{ d.device_id }}/alarms">🚨 Alarmas</a>
+      </td>
+
+      <td>
+        <!-- BOTONES RÁPIDOS -->
+        <div style="margin-bottom:6px; white-space: nowrap;">
+          <form method="post" action="/devices/{{ d.device_id }}/command" style="display:inline-block; margin-right:6px;">
+            <input type="hidden" name="topic" value="{{ d.topic_prefix }}/cmd/run">
+            <input type="hidden" name="payload" value='{"run":1}'>
+            <input type="hidden" name="qos" value="1">
+            <input type="hidden" name="retain" value="false">
+            <button type="submit">▶ RUN</button>
+          </form>
+
+          <form method="post" action="/devices/{{ d.device_id }}/command"
+                style="display:inline-block; margin-right:6px;"
+                onsubmit="return confirm('Confirmar STOP para {{ d.device_id }}?');">
+            <input type="hidden" name="topic" value="{{ d.topic_prefix }}/cmd/run">
+            <input type="hidden" name="payload" value='{"run":0}'>
+            <input type="hidden" name="qos" value="1">
+            <input type="hidden" name="retain" value="false">
+            <button type="submit">■ STOP</button>
+          </form>
+
+          <form method="post" action="/devices/{{ d.device_id }}/command"
+                style="display:inline-block;"
+                onsubmit="return confirm('Confirmar REBOOT para {{ d.device_id }}?');">
+            <input type="hidden" name="topic" value="{{ d.topic_prefix }}/cmd/reboot">
+            <input type="hidden" name="payload" value='{"reboot":1}'>
+            <input type="hidden" name="qos" value="1">
+            <input type="hidden" name="retain" value="false">
+            <button type="submit">↻ REBOOT</button>
+          </form>
+        </div>
+
+        <!-- CUSTOM -->
+        <form method="post" action="/devices/{{ d.device_id }}/command">
+          <div style="font-size:12px; margin-bottom:4px;">
+            <strong>Custom</strong> (base: <code>{{ d.topic_prefix }}</code>)
+          </div>
+
+          <div style="margin-bottom:4px;">
+            <input name="topic"
+                   value="{{ d.topic_prefix }}/cmd/"
+                   style="width: 100%;"
+                   placeholder="{{ d.topic_prefix }}/cmd/tu_comando">
+          </div>
+
+          <div style="margin-bottom:4px;">
+            <input name="payload"
+                   value='{}'
+                   style="width: 100%;"
+                   placeholder='{"param":123}'>
+          </div>
+
+          <div style="display:flex; gap:6px; align-items:center;">
+            <label style="font-size:12px;">
+              QoS
+              <select name="qos">
+                <option value="0">0</option>
+                <option value="1" selected>1</option>
+                <option value="2">2</option>
+              </select>
+            </label>
+
+            <label style="font-size:12px;">
+              Retain
+              <select name="retain">
+                <option value="false" selected>false</option>
+                <option value="true">true</option>
+              </select>
+            </label>
+
+            <button type="submit">Enviar</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if not devices %}
+<p>No hay equipos cargados.</p>
+{% endif %}
+
+{% endblock %}

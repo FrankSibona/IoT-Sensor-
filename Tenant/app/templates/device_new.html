@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Alta de equipo</h2>
+
+<div class="card">
+  <form method="post" action="/devices/new">
+    <label>device_id (número de serie)</label>
+    <input name="device_id" placeholder="RO-2025-0001" required>
+
+    <label>Tenant (empresa)</label>
+    <select name="tenant_id" required>
+      <option value="" disabled selected>Seleccionar...</option>
+      {% for t in tenants %}
+        <option value="{{ t.id }}">{{ t.name }}</option>
+      {% endfor %}
+    </select>
+
+    <button type="submit">Crear equipo</button>
+  </form>
+</div>
+
+{% endblock %}
