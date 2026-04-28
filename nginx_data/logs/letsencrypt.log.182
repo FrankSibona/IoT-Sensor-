@@ -1,0 +1,44 @@
+2026-04-20 13:43:21,085:DEBUG:certbot._internal.main:certbot version: 5.3.0
+2026-04-20 13:43:21,085:DEBUG:certbot._internal.main:Location of certbot entry point: /opt/certbot/bin/certbot
+2026-04-20 13:43:21,085:DEBUG:certbot._internal.main:Arguments: ['--force-renewal', '--config', '/etc/letsencrypt.ini', '--work-dir', '/tmp/letsencrypt-lib', '--logs-dir', '/data/logs', '--cert-name', 'npm-4', '--preferred-challenges', 'dns', '--disable-hook-validation', '--no-random-sleep-on-renew', '--dns-duckdns-no-txt-restore']
+2026-04-20 13:43:21,085:DEBUG:certbot._internal.main:Discovered plugins: PluginsRegistry(PluginEntryPoint#dns-duckdns,PluginEntryPoint#manual,PluginEntryPoint#null,PluginEntryPoint#standalone,PluginEntryPoint#webroot)
+2026-04-20 13:43:21,103:DEBUG:certbot._internal.log:Root logging level set at 30
+2026-04-20 13:43:21,103:DEBUG:certbot._internal.display.obj:Notifying user: Processing /etc/letsencrypt/renewal/npm-4.conf
+2026-04-20 13:43:21,104:ERROR:certbot._internal.renewal:Renewal configuration file /etc/letsencrypt/renewal/npm-4.conf is broken.
+2026-04-20 13:43:21,104:ERROR:certbot._internal.renewal:The error was: expected /etc/letsencrypt/live/npm-4/cert.pem to be a symlink
+Skipping.
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.renewal:Traceback was:
+Traceback (most recent call last):
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/renewal.py", line 114, in reconstitute
+    renewal_candidate = storage.RenewableCert(full_path, config)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/storage.py", line 519, in __init__
+    self._check_symlinks()
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/storage.py", line 598, in _check_symlinks
+    raise errors.CertStorageError(
+certbot.errors.CertStorageError: expected /etc/letsencrypt/live/npm-4/cert.pem to be a symlink
+
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.display.obj:Notifying user: 
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.display.obj:Notifying user: No renewals were attempted.
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.display.obj:Notifying user: 
+Additionally, the following renewal configurations were invalid: 
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.display.obj:Notifying user:   /etc/letsencrypt/renewal/npm-4.conf (parsefail)
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.display.obj:Notifying user: - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+2026-04-20 13:43:21,105:DEBUG:certbot._internal.log:Exiting abnormally:
+Traceback (most recent call last):
+  File "/opt/certbot/bin/certbot", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/main.py", line 18, in main
+    return internal_main.main(cli_args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/main.py", line 1886, in main
+    return config.func(config, plugins)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/main.py", line 1636, in renew
+    renewal.handle_renewal_request(config)
+  File "/opt/certbot/lib/python3.11/site-packages/certbot/_internal/renewal.py", line 742, in handle_renewal_request
+    raise errors.Error(
+certbot.errors.Error: 0 renew failure(s), 1 parse failure(s)
+2026-04-20 13:43:21,106:ERROR:certbot._internal.log:0 renew failure(s), 1 parse failure(s)

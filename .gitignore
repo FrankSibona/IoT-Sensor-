@@ -1,0 +1,7 @@
+# Ignorar bases de datos y datos en vivo de Docker
+mosquitto/data/
+mosquitto/log/
+nginx_letsencrypt/
+postgres-data/ 
+pgdata/
+*.db

@@ -1,0 +1,82 @@
+version: '3'
+
+services:
+  # 1. El Cerebro (Tu script que guarda datos) 🧠
+  iot-python-worker:
+    build: ./python_iot
+    container_name: ro-python-worker
+    restart: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DB_HOST=ro-postgres
+      - DB_NAME=iot_db
+      - DB_USER=user
+      - DB_PASS=password
+      - MQTT_BROKER=ro-mosquitto
+    depends_on:
+      - db
+      - mosquitto
+    networks:
+      - default
+
+
+  # 2. Base de Datos (PostgreSQL) 🗄️
+  db:
+    image: postgres:15
+    container_name: ro-postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=iot_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # 3. Broker MQTT (Mosquitto) 📬
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: ro-mosquitto
+    restart: always
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    command: mosquitto -c /mosquitto/config/mosquitto.conf
+
+  # 4. Grafana (Visualización) 📊
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ro-grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - db
+
+  # 5. Nginx Proxy Manager (Seguridad SSL) 🔒
+  nginx:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: ro-nginx
+    restart: always
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./nginx_data:/data
+      - ./nginx_letsencrypt:/etc/letsencrypt
+
+volumes:
+  postgres_data:
+  grafana_data:
