@@ -5,3 +5,8 @@ nginx_letsencrypt/
 postgres-data/ 
 pgdata/
 *.db
+
+# Ignorar logs del proxy y servidor
+nginx_data/logs/
+*.log
+*.gz
