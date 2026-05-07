@@ -1,0 +1,9 @@
+.git/
+.vscode/
+.pio/
+__pycache__/
+backups/
+node_modules/
+*.log
+*.bin
+*.elf

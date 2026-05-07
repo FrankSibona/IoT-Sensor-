@@ -1,3 +1,4 @@
-paho-mqtt
-psycopg2-binary
-requests
+paho-mqtt>=1.6.1
+psycopg2-binary>=2.9.5
+requests>=2.28.0
+flask>=2.3.0
