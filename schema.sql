@@ -283,6 +283,45 @@ GROUP BY device_id, DATE(time AT TIME ZONE 'America/Argentina/Buenos_Aires')
 ORDER BY day DESC;
 
 -- ============================================================
+-- TABLA: device_commands
+-- Command Engine v3 — lifecycle: SENT → RECEIVED → ACCEPTED
+--                                     → REJECTED | EXECUTED | TIMEOUT
+-- ============================================================
+CREATE TABLE IF NOT EXISTS device_commands (
+    id            SERIAL       PRIMARY KEY,
+    command_id    TEXT         NOT NULL UNIQUE,
+    device_id     TEXT         NOT NULL,
+    cmd           TEXT         NOT NULL
+                  CHECK (cmd IN ('START','STOP','FLUSH','RST')),
+    status        TEXT         NOT NULL DEFAULT 'SENT'
+                  CHECK (status IN ('SENT','RECEIVED','ACCEPTED',
+                                    'REJECTED','EXECUTED','TIMEOUT')),
+    issued_by     TEXT         DEFAULT 'api',
+    retry_count   INTEGER      NOT NULL DEFAULT 0,
+    issued_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    deadline_at   TIMESTAMPTZ,
+    received_at   TIMESTAMPTZ,
+    accepted_at   TIMESTAMPTZ,
+    rejected_at   TIMESTAMPTZ,
+    executed_at   TIMESTAMPTZ,
+    timeout_at    TIMESTAMPTZ,
+    last_ack_at   TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    reject_reason TEXT,
+    details       JSONB        DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_commands_device_time
+    ON device_commands (device_id, issued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commands_id
+    ON device_commands (command_id);
+CREATE INDEX IF NOT EXISTS idx_commands_active
+    ON device_commands (device_id, status)
+    WHERE status IN ('SENT','RECEIVED','ACCEPTED');
+CREATE UNIQUE INDEX IF NOT EXISTS uq_commands_one_active_per_device
+    ON device_commands (device_id)
+    WHERE status IN ('SENT','RECEIVED','ACCEPTED');
+
+-- ============================================================
 -- MIGRACIÓN DESDE v3.2 (si ya tenés la DB):
 -- ============================================================
 -- ALTER TABLE device_config  ADD COLUMN IF NOT EXISTS daily_target_liters FLOAT DEFAULT 0;

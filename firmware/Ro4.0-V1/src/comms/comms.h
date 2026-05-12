@@ -6,11 +6,12 @@
 
 class Sensors;
 class Control;
+class Commands;  // full definition in commands/commands.h, included by comms.cpp
 
 class Comms {
 public:
-    void begin();
-    void update(Sensors &s, Control &c);
+    void begin(Commands &cmds);
+    void update(Sensors &s, Control &c, Commands &cmds);
 
 private:
     bool sendSnapshot = false;

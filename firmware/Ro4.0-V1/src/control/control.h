@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "sensors/sensors.h"
+#include "../commands/commands.h"
 
 // ===================== ESTADOS =====================
 enum SystemState {
@@ -27,7 +28,7 @@ struct OutputsState {
 class Control {
 public:
     void begin();
-    void update(Sensors &s);
+    void update(Sensors &s, Commands &cmds);
 
     bool isRunning();
     SystemState getState();
@@ -60,4 +61,7 @@ private:
 
     void logStateChange(SystemState from, SystemState to);
     const char* stateToString(SystemState s);
+
+    bool isValidTransition(CommandType cmd) const;
+    void applyCommand(CommandType cmd);
 };

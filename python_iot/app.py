@@ -106,8 +106,9 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections import deque, defaultdict
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Dict, List, Any
 
 import paho.mqtt.client as mqtt
@@ -148,6 +149,10 @@ MQTT_TOPIC  = "fyntek/#"
 
 TELEGRAM_TOKEN      = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_ADMIN_CHAT = os.getenv("TELEGRAM_ADMIN_CHAT", "")
+
+# ── Command Engine ────────────────────────────────────────────────────────────
+COMMAND_ALLOWED     = {"START", "STOP", "FLUSH", "RST"}
+COMMAND_TIMEOUT_SEC = int(os.getenv("COMMAND_TIMEOUT_SEC", "60"))
 
 THRESHOLDS = {
     "pressure_max_bar":           float(os.getenv("THRESH_PRESSURE_MAX",   "9.0")),
@@ -1459,14 +1464,22 @@ class MessageProcessor:
             log.warning(f"JSON inválido en {topic}: {e}")
             return
 
+        parts = topic.split("/")
+        if len(parts) < 3:
+            return
+
         device_id = data.get("device_id", "unknown")
+
+        # ACK from firmware — handled without timestamp validation.
+        # topic format: fyntek/{device_id}/cmd/ack
+        if len(parts) >= 4 and parts[2] == "cmd" and parts[3] == "ack":
+            if command_engine:
+                command_engine.handle_ack(device_id, data)
+            return
+
         timestamp = ts_to_utc(data.get("ts"))
         if timestamp is None:
             log.warning(f"[{device_id}] timestamp inválido, descartando")
-            return
-
-        parts = topic.split("/")
-        if len(parts) < 3:
             return
 
         handlers = {
@@ -1773,6 +1786,176 @@ class MessageProcessor:
 processor = MessageProcessor()
 
 # ============================================================
+# COMMAND ENGINE
+# ============================================================
+
+class CommandEngine:
+    """
+    Issues commands to firmware via MQTT and persists their lifecycle in DB.
+
+    Lifecycle (MVP):  SENT → EXECUTED | REJECTED | TIMEOUT
+
+    Thread ownership:
+      issue()         → Flask thread  (HTTP request handler)
+      handle_ack()    → MQTT thread   (paho on_message callback via dispatch())
+      _timeout_loop() → daemon thread (started by start())
+
+    Concurrency safety:
+      All persistent state is DB-backed. No shared in-memory mutation.
+      handle_ack() and _timeout_loop() both use WHERE status='SENT' in their
+      UPDATEs — PostgreSQL row-level locking ensures only one wins; the loser
+      matches 0 rows with no side effects.
+
+    Idempotence:
+      Duplicate ACKs (same command_id, status already set) match 0 rows.
+      Late ACKs arriving after TIMEOUT match 0 rows — TIMEOUT is preserved.
+
+    Note: db._pool access breaks encapsulation of DatabasePool. Acceptable for
+    MVP; a future db.get_connection() method would be the clean path.
+    """
+
+    def __init__(self, mqtt_client):
+        self._mqtt = mqtt_client
+
+    # ── Issue ── Flask thread ──────────────────────────────────────────────────
+
+    def issue(self, device_id: str, cmd: str, issued_by: str = "api") -> dict:
+        """
+        Creates a command in DB and publishes it to MQTT.
+        Returns {"command_id": ..., "status": "SENT"} on success.
+        Returns {"error": ...} on all failures — callers must check.
+
+        Uses the DB connection directly (not db.execute()) so that
+        psycopg2.IntegrityError from uq_commands_one_active_per_device is
+        caught explicitly, preventing a ghost command_id on concurrent inserts.
+        """
+        if cmd not in COMMAND_ALLOWED:
+            return {"error": "unknown_command",
+                    "detail": f"allowed: {sorted(COMMAND_ALLOWED)}"}
+
+        # Optimistic read — real enforcement is the unique partial index.
+        existing = db.fetchall(
+            "SELECT command_id FROM device_commands "
+            "WHERE device_id = %s AND status IN ('SENT','RECEIVED','ACCEPTED')",
+            (device_id,)
+        )
+        if existing:
+            return {"error": "command_pending", "command_id": existing[0][0]}
+
+        command_id  = str(uuid.uuid4())
+        deadline_dt = datetime.now(timezone.utc) + timedelta(seconds=COMMAND_TIMEOUT_SEC)
+
+        conn = db._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO device_commands "
+                    "(command_id, device_id, cmd, status, issued_by, "
+                    " issued_at, deadline_at, updated_at) "
+                    "VALUES (%s, %s, %s, 'SENT', %s, NOW(), %s, NOW())",
+                    (command_id, device_id, cmd, issued_by, deadline_dt)
+                )
+            conn.commit()
+        except psycopg2.IntegrityError:
+            conn.rollback()
+            return {"error": "command_pending"}
+        except Exception as e:
+            conn.rollback()
+            log.error(f"[CMD] INSERT error: {e}")
+            return {"error": "db_error"}
+        finally:
+            db._pool.putconn(conn)
+
+        payload = json.dumps({
+            "command_id":  command_id,
+            "cmd":         cmd,
+            "issued_at":   int(time.time()),
+            "deadline_at": int(deadline_dt.timestamp()),
+        })
+        self._mqtt.publish(f"fyntek/{device_id}/cmd", payload)
+        log.info(f"[CMD] SENT {command_id[:8]}… device={device_id} cmd={cmd}")
+
+        return {"command_id": command_id, "status": "SENT"}
+
+    # ── Handle ACK ── MQTT thread ──────────────────────────────────────────────
+
+    def handle_ack(self, device_id: str, data: dict):
+        """
+        Processes EXECUTED or REJECTED ACK received from firmware.
+
+        WHERE status='SENT' makes every path idempotent:
+          - Duplicate ACK:           0 rows updated, no side effects.
+          - Late ACK after TIMEOUT:  0 rows updated, TIMEOUT is preserved.
+        """
+        command_id = data.get("command_id")
+        ack        = data.get("ack")
+        reason     = data.get("reason") or ""
+
+        if not command_id or ack not in ("EXECUTED", "REJECTED"):
+            log.warning(f"[CMD] ACK inválido device={device_id} data={data}")
+            return
+
+        if ack == "EXECUTED":
+            db.execute(
+                "UPDATE device_commands "
+                "SET status='EXECUTED', executed_at=NOW(), "
+                "    last_ack_at=NOW(), updated_at=NOW() "
+                "WHERE command_id=%s AND device_id=%s AND status='SENT'",
+                (command_id, device_id)
+            )
+            log.info(f"[CMD] EXECUTED {command_id[:8]}… device={device_id}")
+        else:
+            db.execute(
+                "UPDATE device_commands "
+                "SET status='REJECTED', rejected_at=NOW(), reject_reason=%s, "
+                "    last_ack_at=NOW(), updated_at=NOW() "
+                "WHERE command_id=%s AND device_id=%s AND status='SENT'",
+                (reason, command_id, device_id)
+            )
+            log.info(f"[CMD] REJECTED {command_id[:8]}… device={device_id} "
+                     f"reason={reason!r}")
+
+    # ── Timeout loop ── daemon thread ──────────────────────────────────────────
+
+    def start(self):
+        t = threading.Thread(
+            target=self._timeout_loop, daemon=True, name="cmd-timeout"
+        )
+        t.start()
+        log.info("✅ CommandEngine timeout loop iniciado")
+
+    def _timeout_loop(self):
+        """
+        Every 30 s: marks SENT commands past deadline_at as TIMEOUT.
+        WHERE status='SENT' prevents overwriting EXECUTED or REJECTED even
+        when racing with a concurrent handle_ack() call.
+        """
+        while True:
+            time.sleep(30)
+            try:
+                rows = db.fetchall(
+                    "SELECT command_id, device_id, cmd FROM device_commands "
+                    "WHERE status = 'SENT' AND deadline_at < NOW()"
+                )
+                for r in rows:
+                    db.execute(
+                        "UPDATE device_commands "
+                        "SET status='TIMEOUT', timeout_at=NOW(), updated_at=NOW() "
+                        "WHERE command_id=%s AND status='SENT'",
+                        (r[0],)
+                    )
+                    log.info(
+                        f"[CMD] TIMEOUT {r[0][:8]}… device={r[1]} cmd={r[2]}"
+                    )
+            except Exception as e:
+                log.error(f"[CMD] timeout_loop error: {e}", exc_info=True)
+
+
+# Set in main() after MQTT client connects.
+# Flask routes return 503 while this is None.
+command_engine: "CommandEngine" = None
+
+# ============================================================
 # MQTT
 # ============================================================
 
@@ -2038,6 +2221,70 @@ def get_business_history(device_id):
     } for r in rows])
 
 
+@api.route("/api/command/<device_id>", methods=["POST"])
+def post_command(device_id):
+    """
+    Issue a remote command to a device.
+
+    Body: {"cmd": "START" | "STOP" | "FLUSH" | "RST"}
+
+    Responses:
+      201  {"command_id": "...", "status": "SENT"}
+      400  {"error": "unknown_command", "detail": "..."}
+      409  {"error": "command_pending", "command_id": "..."}
+      503  {"error": "command_engine_not_ready"}
+    """
+    if not command_engine:
+        return jsonify({"error": "command_engine_not_ready"}), 503
+
+    data = request.json or {}
+    cmd  = (data.get("cmd") or "").upper().strip()
+
+    result = command_engine.issue(device_id, cmd, issued_by="api")
+
+    if "error" in result:
+        if result["error"] == "command_pending":
+            return jsonify(result), 409
+        if result["error"] == "unknown_command":
+            return jsonify(result), 400
+        return jsonify(result), 500
+
+    return jsonify(result), 201
+
+
+@api.route("/api/command/<device_id>", methods=["GET"])
+def get_commands(device_id):
+    """
+    Returns the last 20 commands for a device, newest first.
+    Includes full lifecycle timestamps for audit and debugging.
+    """
+    rows = db.fetchall(
+        "SELECT command_id, cmd, status, issued_by, "
+        "       issued_at, deadline_at, executed_at, rejected_at, "
+        "       timeout_at, last_ack_at, reject_reason, retry_count "
+        "FROM device_commands WHERE device_id = %s "
+        "ORDER BY issued_at DESC LIMIT 20",
+        (device_id,)
+    )
+    return jsonify([
+        {
+            "command_id":    r[0],
+            "cmd":           r[1],
+            "status":        r[2],
+            "issued_by":     r[3],
+            "issued_at":     r[4].isoformat()  if r[4]  else None,
+            "deadline_at":   r[5].isoformat()  if r[5]  else None,
+            "executed_at":   r[6].isoformat()  if r[6]  else None,
+            "rejected_at":   r[7].isoformat()  if r[7]  else None,
+            "timeout_at":    r[8].isoformat()  if r[8]  else None,
+            "last_ack_at":   r[9].isoformat()  if r[9]  else None,
+            "reject_reason": r[10],
+            "retry_count":   r[11],
+        }
+        for r in rows
+    ])
+
+
 def _start_api():
     api.run(host="0.0.0.0", port=8080, debug=False, use_reloader=False)
 
@@ -2075,6 +2322,10 @@ def main():
     except Exception as e:
         log.critical(f"No se pudo conectar al broker: {e}")
         return
+
+    global command_engine
+    command_engine = CommandEngine(client)
+    command_engine.start()
 
     log.info("✅ Escuchando MQTT...")
     client.loop_forever()

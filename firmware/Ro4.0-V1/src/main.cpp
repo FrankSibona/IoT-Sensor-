@@ -2,17 +2,20 @@
 #include "sensors/sensors.h"
 #include "control/control.h"
 #include "comms/comms.h"
+#include "commands/commands.h"
 
-Sensors sensors;
-Control control;
-Comms comms;
+Sensors  sensors;
+Control  control;
+Comms    comms;
+Commands commands;
 
 void setup() {
     Serial.begin(115200);
 
     sensors.begin();
     control.begin();
-    comms.begin();
+    commands.begin();
+    comms.begin(commands);
 
     Serial.println("=== SYSTEM START ===");
 }
@@ -22,11 +25,11 @@ void loop() {
     // 1. Sensores
     sensors.update();
 
-    // 2. Control (CRÍTICO)
-    control.update(sensors);
+    // 2. Control + Command Engine (CRÍTICO)
+    control.update(sensors, commands);
 
-    // 3. Comunicaciones (NO BLOQUEANTE)
-    comms.update(sensors, control);
+    // 3. Comunicaciones — procesa callbacks MQTT y publica ACK pendiente
+    comms.update(sensors, control, commands);
 
     // 4. Debug liviano
     static unsigned long lastDebug = 0;

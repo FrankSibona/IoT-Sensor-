@@ -3,9 +3,48 @@
 #include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <time.h>
+#include <string.h>
 
 #include "../sensors/sensors.h"
 #include "../control/control.h"
+#include "../commands/commands.h"
+
+// ================= COMMAND CALLBACK =================
+
+static Commands* s_cmds = nullptr;
+
+// Maps ReceiveResult to a human-readable string for field logs.
+// ACCEPTED(0) DUPLICATE(1) BUSY(2) INVALID_JSON(3) UNKNOWN_COMMAND(4)
+static const char* receiveResultName(ReceiveResult r) {
+    switch (r) {
+        case ReceiveResult::ACCEPTED:        return "ACCEPTED";
+        case ReceiveResult::DUPLICATE:       return "DUPLICATE";
+        case ReceiveResult::BUSY:            return "BUSY";
+        case ReceiveResult::INVALID_JSON:    return "INVALID_JSON";
+        case ReceiveResult::UNKNOWN_COMMAND: return "UNKNOWN_COMMAND";
+        default:                             return "UNKNOWN";
+    }
+}
+
+// Free function required by PubSubClient. s_cmds is set in begin().
+// Compares the full topic against the exact expected pattern
+// "fyntek/{device_id}/cmd" — prevents false positives from suffixes
+// like /cmd/ack or malformed topics like /xcmd.
+// Does NOT publish — ACK is deferred to comms.update() after the
+// FSM decides in the next control.update() call.
+static void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    if (!s_cmds) return;
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "fyntek/%s/cmd", device_id.c_str());
+    if (strcmp(topic, expected) != 0) return;
+
+    ReceiveResult result = s_cmds->receive(payload, length);
+    if (result != ReceiveResult::ACCEPTED) {
+        Serial.print("[CMD] recv rechazado: ");
+        Serial.println(receiveResultName(result));
+    }
+}
 
 // ================= CONFIG =================
 
@@ -97,6 +136,8 @@ void Comms::reconnect() {
 
         Serial.println("✅ MQTT conectado");
 
+        mqttClient.subscribe(baseTopic("cmd").c_str());
+
         // 🔥 SNAPSHOT REAL
         sendSnapshot = true;
 
@@ -107,7 +148,7 @@ void Comms::reconnect() {
 
 // ================= INIT =================
 
-void Comms::begin() {
+void Comms::begin(Commands &cmds) {
 
     Serial.println("[COMMS] Init");
 
@@ -118,12 +159,14 @@ void Comms::begin() {
 
     setupWiFi();
 
+    s_cmds = &cmds;
     mqttClient.setServer(mqtt_server, mqtt_port);
+    mqttClient.setCallback(mqttCallback);
 }
 
 // ================= UPDATE =================
 
-void Comms::update(Sensors &s, Control &c) {
+void Comms::update(Sensors &s, Control &c, Commands &cmds) {
 
     unsigned long now = millis();
 
@@ -348,5 +391,31 @@ void Comms::update(Sensors &s, Control &c) {
         json += "}";
 
         mqttClient.publish(baseTopic("heartbeat").c_str(), json.c_str());
+    }
+
+    // ================= CMD ACK =================
+    // Published after control.update() has set the pending ACK this iteration.
+    // Uses snprintf into a stack buffer — no heap, no String.
+    // clearAck() is called ONLY on successful publish. If publish() fails
+    // (disconnect, buffer full, TCP error), the ACK stays in RAM and is
+    // retried on the next loop iteration, preventing silent TIMEOUT on backend.
+    if (cmds.hasPendingAck() && mqttClient.connected()) {
+        const PendingAck& ack = cmds.getPendingAck();
+        char json[256];
+        snprintf(json, sizeof(json),
+            "{\"command_id\":\"%s\",\"device_id\":\"%s\","
+            "\"cmd\":\"%s\",\"ack\":\"%s\",\"reason\":\"%s\",\"ts\":%ld}",
+            ack.command_id,
+            device_id.c_str(),
+            Commands::cmdToString(ack.cmd_type),
+            Commands::ackStatusToString(ack.status),
+            ack.reason,
+            ts);
+        bool ok = mqttClient.publish(baseTopic("cmd/ack").c_str(), json);
+        if (ok) {
+            cmds.clearAck();
+        } else {
+            Serial.println("[CMD] ACK publish failed, retry next loop");
+        }
     }
 }

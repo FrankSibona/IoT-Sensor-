@@ -92,7 +92,29 @@ void Control::stopAll() {
 
 // ================= FSM =================
 
-void Control::update(Sensors &s) {
+void Control::update(Sensors &s, Commands &cmds) {
+
+    // ===== COMMAND ENGINE =====
+    // Remote commands are processed first so they take effect this iteration.
+    // Order: applyCommand() → setPendingAck(EXECUTED) → clearPending().
+    // EXECUTED means the FSM transition was applied, not that hardware confirmed it.
+    // If applyCommand() ever gains a return value or internal validation,
+    // condition setPendingAck(EXECUTED) on its result here — no structural change needed.
+    if (cmds.hasPending()) {
+        if (cmds.hasExpired()) {
+            cmds.clearPending();
+        } else {
+            const PendingCmd cmd = cmds.getPending();  // value copy before slot is cleared
+            if (isValidTransition(cmd.type)) {
+                applyCommand(cmd.type);
+                cmds.setPendingAck(cmd.id, cmd.type, AckStatus::EXECUTED, "");
+                cmds.clearPending();
+            } else {
+                cmds.setPendingAck(cmd.id, cmd.type, AckStatus::REJECTED, "invalid_fsm_state");
+                cmds.clearPending();
+            }
+        }
+    }
 
     // ===== Persistencia =====
     if (s.demanda()) {
@@ -195,5 +217,52 @@ void Control::update(Sensors &s) {
 
     if (retryCount > 0 && millis() - retryTimer < RETRY_DELAY) {
         return;
+    }
+}
+
+// ================= COMMAND VALIDATION =================
+
+bool Control::isValidTransition(CommandType cmd) const {
+    switch (cmd) {
+        case CommandType::START:
+            return state == IDLE;
+        case CommandType::STOP:
+            return state == STARTING || state == PRODUCING || state == FLUSHING;
+        case CommandType::FLUSH:
+            return state == PRODUCING;
+        case CommandType::RST:
+            // Only valid in fault/error states — rejected in IDLE to prevent
+            // silent no-ops becoming unsafe if reset behavior gains side-effects.
+            return state == FAULT || state == STARTING || state == FLUSHING;
+        default:
+            return false;
+    }
+}
+
+// ================= COMMAND APPLICATION =================
+
+void Control::applyCommand(CommandType cmd) {
+    switch (cmd) {
+        case CommandType::START:
+            state = STARTING;
+            stateStartTime = millis();
+            break;
+        case CommandType::STOP:
+            // From PRODUCING: flush membrane before halting.
+            // From STARTING / FLUSHING: abort immediately.
+            state = (state == PRODUCING) ? FLUSHING : IDLE;
+            stateStartTime = millis();
+            break;
+        case CommandType::FLUSH:
+            // Only reachable from PRODUCING (enforced by isValidTransition).
+            state = FLUSHING;
+            stateStartTime = millis();
+            break;
+        case CommandType::RST:
+            retryCount = 0;
+            state = IDLE;
+            break;
+        default:
+            break;
     }
 }

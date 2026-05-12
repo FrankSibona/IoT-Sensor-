@@ -227,3 +227,33 @@ Avoid:
 * generic tutorials
 * excessive explanations
 * unnecessary rewrites
+
+
+---
+
+# CHANGE CONTROL RULES
+
+Do not perform large refactors without approval.
+
+Do not modify unrelated modules outside the requested scope.
+
+Preserve backward compatibility whenever possible.
+
+Do not modify existing telemetry payloads unless explicitly requested.
+
+Do not rename MQTT topics or database fields without approval.
+
+Do not restructure folders or files unless necessary.
+
+Before changing architecture-critical code, explain:
+
+- why the change is needed
+- risks
+- compatibility impact
+- migration requirements
+
+Prefer incremental patches over rewrites.
+
+Always inspect existing code before proposing abstractions.
+
+Avoid introducing unnecessary dependencies.
