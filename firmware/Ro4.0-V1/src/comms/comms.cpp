@@ -9,6 +9,12 @@
 #include "../control/control.h"
 #include "../commands/commands.h"
 
+// ================= DEVICE ID =================
+// Must be declared before mqttCallback — static free functions only see
+// names declared above their definition in the same translation unit.
+
+String device_id;
+
 // ================= COMMAND CALLBACK =================
 
 static Commands* s_cmds = nullptr;
@@ -75,10 +81,6 @@ unsigned long lastMqttReconnect = 0;
 unsigned long lastProcess = 0;
 unsigned long lastQuality = 0;
 unsigned long lastHeartbeat = 0;
-
-// ================= DEVICE ID =================
-
-String device_id;
 
 String getDeviceID() {
     uint64_t mac = ESP.getEfuseMac();
