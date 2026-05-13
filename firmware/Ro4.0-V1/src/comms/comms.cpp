@@ -389,7 +389,8 @@ void Comms::update(Sensors &s, Control &c, Commands &cmds) {
         String json = "{";
         json += "\"device_id\":\"" + device_id + "\",";
         json += "\"ts\":" + String(ts) + ",";
-        json += "\"status\":\"online\"";
+        json += "\"status\":\"online\",";
+        json += "\"state\":\"" + String(c.getStateName()) + "\"";
         json += "}";
 
         mqttClient.publish(baseTopic("heartbeat").c_str(), json.c_str());

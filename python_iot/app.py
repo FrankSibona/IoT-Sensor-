@@ -1566,14 +1566,31 @@ class MessageProcessor:
              validate_bool(data.get("valve_flush")), validate_bool(data.get("valve_inlet"))),
         )
 
+    # Valid FSM states the firmware can report. Used to guard heartbeat reconciliation.
+    _FSM_STATES = {"IDLE", "STARTING", "PRODUCING", "FLUSHING", "STOPPING", "FAULT"}
+
     def _handle_heartbeat(self, device_id, timestamp, data):
         self._auto_register(device_id, data.get("fw_version", ""))
-        db.execute(
-            "INSERT INTO device_status (device_id,last_seen,online) VALUES (%s,%s,TRUE) "
-            "ON CONFLICT (device_id) DO UPDATE "
-            "SET last_seen=EXCLUDED.last_seen, online=TRUE",
-            (device_id, timestamp),
-        )
+
+        # Heartbeat carries current FSM state for backend state reconciliation after
+        # restart. /state remains the primary channel for FSM transition events.
+        # If the field is absent (older firmware), this is a no-op.
+        reported_state = data.get("state", "").upper()
+        if reported_state in self._FSM_STATES:
+            db.execute(
+                "INSERT INTO device_status (device_id,last_seen,online,state) "
+                "VALUES (%s,%s,TRUE,%s) "
+                "ON CONFLICT (device_id) DO UPDATE "
+                "SET last_seen=EXCLUDED.last_seen, online=TRUE, state=EXCLUDED.state",
+                (device_id, timestamp, reported_state),
+            )
+        else:
+            db.execute(
+                "INSERT INTO device_status (device_id,last_seen,online) VALUES (%s,%s,TRUE) "
+                "ON CONFLICT (device_id) DO UPDATE "
+                "SET last_seen=EXCLUDED.last_seen, online=TRUE",
+                (device_id, timestamp),
+            )
 
     # ---- ANALYTICS PIPELINE ────────────────────────────────
 
@@ -2231,11 +2248,15 @@ def post_command(device_id):
     Responses:
       201  {"command_id": "...", "status": "SENT"}
       400  {"error": "unknown_command", "detail": "..."}
+      404  {"error": "device_not_found"}
       409  {"error": "command_pending", "command_id": "..."}
       503  {"error": "command_engine_not_ready"}
     """
     if not command_engine:
         return jsonify({"error": "command_engine_not_ready"}), 503
+
+    if not db.fetchall("SELECT 1 FROM devices WHERE device_id = %s", (device_id,)):
+        return jsonify({"error": "device_not_found"}), 404
 
     data = request.json or {}
     cmd  = (data.get("cmd") or "").upper().strip()
