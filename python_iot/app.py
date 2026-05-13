@@ -101,6 +101,8 @@ ARQUITECTURA DE CAPAS:
   Capa 4 → Negocio (cada 5 min)          → KPIs para cliente final
 """
 
+import functools
+import hmac
 import json
 import logging
 import os
@@ -151,8 +153,41 @@ TELEGRAM_TOKEN      = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_ADMIN_CHAT = os.getenv("TELEGRAM_ADMIN_CHAT", "")
 
 # ── Command Engine ────────────────────────────────────────────────────────────
-COMMAND_ALLOWED     = {"START", "STOP", "FLUSH", "RST"}
-COMMAND_TIMEOUT_SEC = int(os.getenv("COMMAND_TIMEOUT_SEC", "60"))
+COMMAND_ALLOWED         = {"START", "STOP", "FLUSH", "RST"}
+COMMAND_TIMEOUT_SEC     = int(os.getenv("COMMAND_TIMEOUT_SEC", "60"))
+
+# ── AI Integration layer ──────────────────────────────────────────────────────
+# AI_API_KEY: Bearer token for AI service — grants read context + issue commands.
+# Empty string disables auth (internal/dev use only).
+AI_API_KEY              = os.getenv("AI_API_KEY", "")
+
+# ADMIN_API_KEY: Bearer token for human operators — grants AI Gate mode changes.
+# The AI service MUST NOT have access to this key.
+# This prevents the AI from modifying its own permission level.
+# Empty string disables admin auth (dev mode — must be set in production).
+ADMIN_API_KEY           = os.getenv("ADMIN_API_KEY", "")
+
+# Minimum seconds between successive AI commands for the same device.
+AI_COMMAND_COOLDOWN_SEC = int(os.getenv("AI_COMMAND_COOLDOWN_SEC", "10"))
+
+# How many process telemetry rows to include in the context window.
+AI_CONTEXT_WINDOW_ROWS  = int(os.getenv("AI_CONTEXT_WINDOW_ROWS", "10"))
+
+# API version returned in every response.
+API_VERSION             = "1"
+
+# ── AI Control Gate ───────────────────────────────────────────────────────────
+# Controls what the AI service is allowed to do.
+#
+#   OBSERVE_ONLY — read context allowed, commands blocked.
+#                  Normal mode for monitoring without actuation.
+#   AUTO_EXECUTE — read and commands allowed. Full AI autonomy.
+#   LOCKDOWN     — read and commands both blocked. Emergency isolation.
+#                  Human access via internal /api/* endpoints still works.
+#
+# Default is OBSERVE_ONLY — safe on every startup.
+AI_GATE_MODES        = {"OBSERVE_ONLY", "AUTO_EXECUTE", "LOCKDOWN"}
+AI_GATE_DEFAULT_MODE = os.getenv("AI_GATE_DEFAULT_MODE", "OBSERVE_ONLY")
 
 THRESHOLDS = {
     "pressure_max_bar":           float(os.getenv("THRESH_PRESSURE_MAX",   "9.0")),
@@ -1972,6 +2007,24 @@ class CommandEngine:
 # Flask routes return 503 while this is None.
 command_engine: "CommandEngine" = None
 
+# Per-device timestamp of last AI-issued command.
+# IN-MEMORY: lost on backend restart. The DB unique partial index
+# (uq_commands_one_active_per_device) is the authoritative enforcement.
+# Cooldown is a UX-level safeguard, not a security boundary.
+_ai_cooldown: Dict[str, float] = {}
+
+# AI Control Gate state.
+# IN-MEMORY: resets to AI_GATE_DEFAULT_MODE ("OBSERVE_ONLY") on every
+# backend restart. This is intentional — safe-by-default on recovery.
+# If AUTO_EXECUTE is needed after a restart, an operator must explicitly
+# re-enable it via POST /api/v1/ai/mode with ADMIN_API_KEY.
+# Do NOT add DB persistence here without an explicit approval workflow.
+_ai_gate: Dict[str, Any] = {
+    "mode":       AI_GATE_DEFAULT_MODE,
+    "updated_at": None,
+    "updated_by": "system:startup",
+}
+
 # ============================================================
 # MQTT
 # ============================================================
@@ -1998,6 +2051,57 @@ def on_message(client, userdata, msg):
 # ============================================================
 
 api = Flask(__name__)
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def _check_bearer(key: str) -> bool:
+    """Extract and validate a Bearer token against the given key. Timing-safe."""
+    if not key:
+        return True                                    # auth disabled
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(auth[7:], key)
+
+
+def require_api_key(f):
+    """
+    Decorator for AI-facing routes (context + commands).
+    Validates against AI_API_KEY.
+    Auth disabled when AI_API_KEY is empty (internal/dev mode).
+
+    Does NOT grant access to admin operations (gate mode changes).
+    """
+    @functools.wraps(f)
+    def _wrapper(*args, **kwargs):
+        if not _check_bearer(AI_API_KEY):
+            return jsonify({
+                "error":  "unauthorized",
+                "detail": "Valid AI Bearer token required",
+            }), 401
+        return f(*args, **kwargs)
+    return _wrapper
+
+
+def require_admin_key(f):
+    """
+    Decorator for admin-only routes (AI Gate mode changes).
+    Validates against ADMIN_API_KEY.
+    Auth disabled when ADMIN_API_KEY is empty (dev mode only).
+
+    The AI service must NOT hold this key — it must never be able
+    to modify its own permission level.
+    """
+    @functools.wraps(f)
+    def _wrapper(*args, **kwargs):
+        if not _check_bearer(ADMIN_API_KEY):
+            return jsonify({
+                "error":  "unauthorized",
+                "detail": "Valid admin Bearer token required",
+            }), 401
+        return f(*args, **kwargs)
+    return _wrapper
+
 
 @api.route("/api/config/<device_id>", methods=["GET"])
 def get_config(device_id):
@@ -2304,6 +2408,368 @@ def get_commands(device_id):
         }
         for r in rows
     ])
+
+
+# ── AI / External service endpoints (v1) ──────────────────────────────────────
+
+@api.route("/api/v1/device/<device_id>/context", methods=["GET"])
+@require_api_key
+def get_device_context(device_id):
+    """
+    Returns a raw snapshot of all firmware data for AI reasoning.
+
+    Delivers uninterpreted data only:
+      raw.connectivity  — online status, last_seen, seconds_since_seen
+      raw.fsm           — current state, running flag, retry_count
+      raw.process       — latest sensor values (flows, pressures, volumes)
+      raw.process_window — recent telemetry history (chronological)
+      raw.quality       — TDS raw values
+      raw.inputs        — digital input states (demand, crudo_ok, etc.)
+      raw.outputs       — relay/valve states
+      raw.state_history — last 5 FSM transitions
+      commands          — active command + last 5 in history with details
+
+    No backend interpretations, flags, or derived KPIs are included.
+    The AI is responsible for all reasoning.
+
+    LOCKDOWN mode blocks this endpoint.
+    GET /api/v1/ai/mode always works regardless of gate mode.
+
+    Query params:
+      window (int, default=AI_CONTEXT_WINDOW_ROWS, max=60)
+    """
+    if _ai_gate["mode"] == "LOCKDOWN":
+        return jsonify({"error": "lockdown", "detail": "AI access blocked"}), 403
+
+    window = min(int(request.args.get("window", AI_CONTEXT_WINDOW_ROWS)), 60)
+
+    if not db.fetchall("SELECT 1 FROM devices WHERE device_id = %s", (device_id,)):
+        return jsonify({"error": "device_not_found"}), 404
+
+    now_utc = datetime.now(timezone.utc)
+
+    st = db.fetchall(
+        "SELECT state, online, last_seen FROM device_status WHERE device_id = %s",
+        (device_id,)
+    )
+    dev = db.fetchall(
+        "SELECT fw_version FROM devices WHERE device_id = %s", (device_id,)
+    )
+    connectivity = {}
+    fsm_state = "UNKNOWN"
+    if st:
+        seconds_ago = int((now_utc - st[0][2]).total_seconds()) if st[0][2] else None
+        connectivity = {
+            "online":             st[0][1],
+            "last_seen_utc":      st[0][2].isoformat() if st[0][2] else None,
+            "seconds_since_seen": seconds_ago,
+        }
+        fsm_state = st[0][0] or "UNKNOWN"
+
+    fsm_row = db.fetchall(
+        "SELECT state, running, retry_count, time FROM telemetry_state "
+        "WHERE device_id = %s ORDER BY time DESC LIMIT 1",
+        (device_id,)
+    )
+    fsm = {
+        "state":           fsm_state,
+        "running":         fsm_row[0][1] if fsm_row else None,
+        "retry_count":     fsm_row[0][2] if fsm_row else None,
+        "state_since_utc": fsm_row[0][3].isoformat() if fsm_row else None,
+    }
+
+    proc = db.fetchall(
+        "SELECT time, flow_perm_lpm, flow_rechazo_lpm, pressure_membrane_bar, "
+        "       pressure_brine_bar, volume_perm_l, volume_rechazo_l, fw_version "
+        "FROM telemetry_process WHERE device_id = %s ORDER BY time DESC LIMIT 1",
+        (device_id,)
+    )
+    process_latest = None
+    if proc:
+        r = proc[0]
+        process_latest = {
+            "sampled_at_utc":        r[0].isoformat(),
+            "flow_perm_lpm":         r[1], "flow_rechazo_lpm":      r[2],
+            "pressure_membrane_bar": r[3], "pressure_brine_bar":    r[4],
+            "volume_perm_l":         r[5], "volume_rechazo_l":      r[6],
+            "fw_version":            r[7],
+        }
+
+    wrows = db.fetchall(
+        "SELECT time, flow_perm_lpm, flow_rechazo_lpm, pressure_membrane_bar, "
+        "       pressure_brine_bar, volume_perm_l, volume_rechazo_l "
+        "FROM telemetry_process WHERE device_id = %s "
+        "ORDER BY time DESC LIMIT %s",
+        (device_id, window)
+    )
+    process_window = [
+        {
+            "ts_utc":                r[0].isoformat(),
+            "flow_perm_lpm":         r[1], "flow_rechazo_lpm":      r[2],
+            "pressure_membrane_bar": r[3], "pressure_brine_bar":    r[4],
+            "volume_perm_l":         r[5], "volume_rechazo_l":      r[6],
+        }
+        for r in reversed(wrows)
+    ]
+
+    qrow = db.fetchall(
+        "SELECT time, tds_in_raw, tds_out_raw FROM telemetry_quality "
+        "WHERE device_id = %s ORDER BY time DESC LIMIT 1",
+        (device_id,)
+    )
+    quality = None
+    if qrow:
+        quality = {
+            "sampled_at_utc": qrow[0][0].isoformat(),
+            "tds_in_raw": qrow[0][1], "tds_out_raw": qrow[0][2],
+        }
+
+    irow = db.fetchall(
+        "SELECT time, demand, crudo_ok, dose_ok, presostato, reserva1, reserva2 "
+        "FROM telemetry_inputs WHERE device_id = %s ORDER BY time DESC LIMIT 1",
+        (device_id,)
+    )
+    inputs = None
+    if irow:
+        inputs = {
+            "sampled_at_utc": irow[0][0].isoformat(),
+            "demand":   irow[0][1], "crudo_ok":   irow[0][2],
+            "dose_ok":  irow[0][3], "presostato": irow[0][4],
+            "reserva1": irow[0][5], "reserva2":   irow[0][6],
+        }
+
+    orow = db.fetchall(
+        "SELECT time, pump_low, pump_high, pump_inlet, pump_dose, "
+        "       valve_flush, valve_inlet "
+        "FROM telemetry_outputs WHERE device_id = %s ORDER BY time DESC LIMIT 1",
+        (device_id,)
+    )
+    outputs = None
+    if orow:
+        outputs = {
+            "sampled_at_utc": orow[0][0].isoformat(),
+            "pump_low":    orow[0][1], "pump_high":   orow[0][2],
+            "pump_inlet":  orow[0][3], "pump_dose":   orow[0][4],
+            "valve_flush": orow[0][5], "valve_inlet": orow[0][6],
+        }
+
+    srows = db.fetchall(
+        "SELECT time, state, running, retry_count FROM telemetry_state "
+        "WHERE device_id = %s ORDER BY time DESC LIMIT 5",
+        (device_id,)
+    )
+    state_history = [
+        {"ts_utc": r[0].isoformat(), "state": r[1],
+         "running": r[2], "retry_count": r[3]}
+        for r in reversed(srows)
+    ]
+
+    active_cmd = db.fetchall(
+        "SELECT command_id, cmd, status, issued_at, deadline_at "
+        "FROM device_commands WHERE device_id = %s "
+        "AND status IN ('SENT','RECEIVED','ACCEPTED') LIMIT 1",
+        (device_id,)
+    )
+    cmd_history = db.fetchall(
+        "SELECT command_id, cmd, status, issued_at, executed_at, "
+        "       rejected_at, timeout_at, reject_reason, details "
+        "FROM device_commands WHERE device_id = %s "
+        "ORDER BY issued_at DESC LIMIT 5",
+        (device_id,)
+    )
+    commands = {
+        "active": {
+            "command_id":  active_cmd[0][0],
+            "cmd":         active_cmd[0][1],
+            "status":      active_cmd[0][2],
+            "issued_at":   active_cmd[0][3].isoformat(),
+            "deadline_at": active_cmd[0][4].isoformat() if active_cmd[0][4] else None,
+        } if active_cmd else None,
+        "history": [
+            {
+                "command_id":    r[0],
+                "cmd":           r[1],
+                "status":        r[2],
+                "issued_at_utc": r[3].isoformat(),
+                "executed_at":   r[4].isoformat() if r[4] else None,
+                "rejected_at":   r[5].isoformat() if r[5] else None,
+                "timeout_at":    r[6].isoformat() if r[6] else None,
+                "reject_reason": r[7],
+                "details":       r[8],
+            }
+            for r in cmd_history
+        ],
+    }
+
+    return jsonify({
+        "api_version":       API_VERSION,
+        "device_id":         device_id,
+        "generated_at_utc":  now_utc.isoformat(),
+        "fw_version":        dev[0][0] if dev else None,
+        "raw": {
+            "connectivity":   connectivity,
+            "fsm":            fsm,
+            "process":        process_latest,
+            "process_window": process_window,
+            "quality":        quality,
+            "inputs":         inputs,
+            "outputs":        outputs,
+            "state_history":  state_history,
+        },
+        "commands": commands,
+    })
+
+
+@api.route("/api/v1/ai/mode", methods=["GET"])
+@require_api_key
+def get_ai_mode():
+    """
+    Returns the current AI Control Gate mode.
+    Accessible to the AI service (AI_API_KEY) for transparency.
+    Always works regardless of gate mode — including LOCKDOWN.
+
+    Modes:
+      OBSERVE_ONLY — read allowed, commands blocked (default on startup)
+      AUTO_EXECUTE — read and commands allowed
+      LOCKDOWN     — read and commands blocked (emergency isolation)
+    """
+    return jsonify({
+        "api_version":  API_VERSION,
+        "mode":         _ai_gate["mode"],
+        "updated_at":   _ai_gate["updated_at"],
+        "updated_by":   _ai_gate["updated_by"],
+        "allowed_modes": sorted(AI_GATE_MODES),
+        "_note": "State is in-memory. Resets to OBSERVE_ONLY on backend restart.",
+    })
+
+
+@api.route("/api/v1/ai/mode", methods=["POST"])
+@require_admin_key
+def set_ai_mode():
+    """
+    Changes the AI Control Gate mode. Requires ADMIN_API_KEY.
+
+    The AI service (AI_API_KEY) cannot call this endpoint — it must
+    never be able to modify its own permission level.
+
+    Body: {"mode": "OBSERVE_ONLY" | "AUTO_EXECUTE" | "LOCKDOWN"}
+
+    Every change is logged with previous mode, new mode, and timestamp.
+
+    IN-MEMORY: mode resets to OBSERVE_ONLY on backend restart.
+    Re-enabling AUTO_EXECUTE after restart requires explicit admin action.
+    """
+    data     = request.json or {}
+    new_mode = (data.get("mode") or "").upper().strip()
+
+    if new_mode not in AI_GATE_MODES:
+        return jsonify({"error": "invalid_mode", "allowed": sorted(AI_GATE_MODES)}), 400
+
+    previous              = _ai_gate["mode"]
+    _ai_gate["mode"]      = new_mode
+    _ai_gate["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _ai_gate["updated_by"] = "admin_api"
+
+    log.info(f"[AI GATE] {previous} → {new_mode}")
+
+    return jsonify({
+        "api_version":   API_VERSION,
+        "mode":          new_mode,
+        "previous_mode": previous,
+        "updated_at":    _ai_gate["updated_at"],
+    })
+
+
+@api.route("/api/v1/command/<device_id>", methods=["POST"])
+@require_api_key
+def post_ai_command(device_id):
+    """
+    Issues a command from the AI service through the AI Control Gate.
+
+    Body:
+      {"cmd": "START|STOP|FLUSH|RST", "reason": "<mandatory explanation>"}
+
+    'reason' is mandatory — every AI action must be auditable.
+    Stored in device_commands.details JSONB alongside ai_mode.
+
+    Gate behavior:
+      OBSERVE_ONLY → 403 ai_gate_blocked (commands not allowed)
+      AUTO_EXECUTE → executes immediately, issued_by="ai"
+      LOCKDOWN     → 403 lockdown (all AI access blocked)
+
+    Cooldown: AI_COMMAND_COOLDOWN_SEC between commands per device.
+    IN-MEMORY cooldown resets on restart; DB unique index is the hard guard.
+
+    Audit trail stored in device_commands.details:
+      {"ai_mode": "...", "reason": "...", "issued_at": "..."}
+    """
+    mode = _ai_gate["mode"]
+
+    if mode == "LOCKDOWN":
+        return jsonify({"error": "lockdown", "detail": "AI access blocked"}), 403
+
+    if mode == "OBSERVE_ONLY":
+        return jsonify({
+            "error":        "ai_gate_blocked",
+            "detail":       "Gate is OBSERVE_ONLY. Commands not allowed.",
+            "current_mode": mode,
+        }), 403
+
+    # AUTO_EXECUTE from here on
+    if not command_engine:
+        return jsonify({"error": "command_engine_not_ready"}), 503
+
+    if not db.fetchall("SELECT 1 FROM devices WHERE device_id = %s", (device_id,)):
+        return jsonify({"error": "device_not_found"}), 404
+
+    data   = request.json or {}
+    cmd    = (data.get("cmd") or "").upper().strip()
+    reason = (data.get("reason") or "").strip()
+
+    if not reason:
+        return jsonify({
+            "error":  "missing_reason",
+            "detail": "Field 'reason' is mandatory for AI commands.",
+        }), 400
+
+    # Per-device cooldown (in-memory, resets on restart)
+    now_ts    = time.time()
+    remaining = AI_COMMAND_COOLDOWN_SEC - (now_ts - _ai_cooldown.get(device_id, 0))
+    if remaining > 0:
+        return jsonify({
+            "error":           "cooldown_active",
+            "retry_after_sec": round(remaining, 1),
+        }), 403
+
+    result = command_engine.issue(device_id, cmd, issued_by="ai")
+
+    if "error" in result:
+        if result["error"] == "command_pending":
+            return jsonify(result), 409
+        if result["error"] == "unknown_command":
+            return jsonify(result), 400
+        return jsonify(result), 500
+
+    # Audit: persist ai_mode + reason in details JSONB
+    db.execute(
+        "UPDATE device_commands SET details = %s::jsonb WHERE command_id = %s",
+        (
+            json.dumps({
+                "ai_mode":   mode,
+                "reason":    reason,
+                "issued_at": datetime.now(timezone.utc).isoformat(),
+            }),
+            result["command_id"],
+        )
+    )
+
+    _ai_cooldown[device_id] = now_ts
+    log.info(
+        f"[AI CMD] {cmd} device={device_id} mode={mode} "
+        f"id={result['command_id'][:8]}… reason={reason!r}"
+    )
+
+    return jsonify({**result, "ai_mode": mode}), 201
 
 
 def _start_api():
