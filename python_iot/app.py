@@ -117,7 +117,7 @@ import paho.mqtt.client as mqtt
 import psycopg2
 import psycopg2.pool
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 
 # ============================================================
 # LOGGING
@@ -175,6 +175,12 @@ AI_CONTEXT_WINDOW_ROWS  = int(os.getenv("AI_CONTEXT_WINDOW_ROWS", "10"))
 
 # API version returned in every response.
 API_VERSION             = "1"
+
+# ── Admin Panel ───────────────────────────────────────────────────────────────
+# HTTP Basic Auth for /admin/* routes.
+# Empty ADMIN_PANEL_USER disables auth (dev mode only — do NOT leave empty in prod).
+ADMIN_PANEL_USER = os.getenv("ADMIN_PANEL_USER", "")
+ADMIN_PANEL_PASS = os.getenv("ADMIN_PANEL_PASS", "")
 
 # ── AI Control Gate ───────────────────────────────────────────────────────────
 # Controls what the AI service is allowed to do.
@@ -2083,6 +2089,29 @@ def require_api_key(f):
     return _wrapper
 
 
+def require_basic_auth(f):
+    """
+    HTTP Basic Auth decorator for /admin/* routes.
+    Uses ADMIN_PANEL_USER / ADMIN_PANEL_PASS env vars.
+    Auth disabled when ADMIN_PANEL_USER is empty (dev mode).
+    """
+    @functools.wraps(f)
+    def _wrapper(*args, **kwargs):
+        if not ADMIN_PANEL_USER:
+            return f(*args, **kwargs)
+        auth = request.authorization
+        valid = (
+            auth is not None
+            and hmac.compare_digest(auth.username or "", ADMIN_PANEL_USER)
+            and hmac.compare_digest(auth.password or "", ADMIN_PANEL_PASS)
+        )
+        if not valid:
+            return ("Authentication required", 401,
+                    {"WWW-Authenticate": 'Basic realm="KAIROX Admin"'})
+        return f(*args, **kwargs)
+    return _wrapper
+
+
 def require_admin_key(f):
     """
     Decorator for admin-only routes (AI Gate mode changes).
@@ -2770,6 +2799,192 @@ def post_ai_command(device_id):
     )
 
     return jsonify({**result, "ai_mode": mode}), 201
+
+
+# ── Admin Panel ───────────────────────────────────────────────────────────────
+
+_ADMIN_PANEL_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KAIROX · Admin</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;padding:2rem}
+h1{font-size:1.3rem;letter-spacing:.06em;color:#64748b;margin-bottom:1.75rem;text-transform:uppercase}
+.card{background:#1e2130;border:1px solid #2d3348;border-radius:8px;padding:1.25rem;margin-bottom:1.25rem}
+.card-title{font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:#475569;margin-bottom:.85rem}
+.badge{display:inline-block;padding:.22rem .65rem;border-radius:999px;font-size:.78rem;font-weight:700}
+.bg{background:#14532d;color:#4ade80}.br{background:#7f1d1d;color:#f87171}
+.by{background:#713f12;color:#fbbf24}.bb{background:#1e3a5f;color:#60a5fa}
+.bg2{background:#1e293b;color:#94a3b8}
+.row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.meta{font-size:.72rem;color:#475569}
+.btn-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
+button{padding:.7rem;border:none;border-radius:6px;font-size:.88rem;font-weight:700;
+  cursor:pointer;letter-spacing:.04em;transition:opacity .12s}
+button:hover{opacity:.82}button:active{opacity:.65}button:disabled{opacity:.3;cursor:not-allowed}
+.bs{background:#16a34a;color:#fff}.bst{background:#dc2626;color:#fff}
+.bf{background:#2563eb;color:#fff}.br2{background:#d97706;color:#fff}
+.rbox{background:#0f1117;border:1px solid #2d3348;border-radius:6px;padding:.7rem 1rem;
+  font-family:monospace;font-size:.78rem;min-height:2.4rem;white-space:pre-wrap;color:#64748b}
+.rbox.ok{border-color:#16a34a;color:#4ade80}.rbox.er{border-color:#dc2626;color:#f87171}
+.crow{display:flex;justify-content:space-between;align-items:center;
+  padding:.42rem 0;border-bottom:1px solid #1a1f2e;font-size:.78rem;gap:.5rem}
+.crow:last-child{border-bottom:none}
+select{background:#1e2130;border:1px solid #2d3348;color:#e2e8f0;
+  padding:.38rem .7rem;border-radius:6px;font-size:.83rem;margin-bottom:1.25rem}
+#ri{font-size:.68rem;color:#334155;margin-left:.5rem}
+</style>
+</head>
+<body>
+<h1>⚙ KAIROX Admin</h1>
+
+<label class="meta">Dispositivo</label><br>
+<select id="dev" onchange="poll()">
+{% for d in devices %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+</select>
+<span id="ri">—</span>
+
+<div class="card">
+  <div class="card-title">Estado</div>
+  <div class="row">
+    <span id="b-online" class="badge bg2">···</span>
+    <span id="b-fsm"    class="badge bg2">···</span>
+  </div>
+  <p class="meta" style="margin-top:.55rem" id="b-seen">Cargando...</p>
+</div>
+
+<div class="card">
+  <div class="card-title">Comandos</div>
+  <div class="btn-grid">
+    <button class="bs"  onclick="send('START')">START</button>
+    <button class="bst" onclick="send('STOP')">STOP</button>
+    <button class="bf"  onclick="send('FLUSH')">FLUSH</button>
+    <button class="br2" onclick="send('RST')">RST</button>
+  </div>
+  <p class="meta" style="margin-top:.55rem">
+    Validaciones ocurren en el backend y en el firmware.
+  </p>
+</div>
+
+<div class="card">
+  <div class="card-title">Respuesta</div>
+  <div class="rbox" id="resp">—</div>
+</div>
+
+<div class="card">
+  <div class="card-title">Últimos comandos</div>
+  <div id="hist"><span class="meta">Cargando...</span></div>
+</div>
+
+<script>
+const FSM = {
+  PRODUCING:'bg', FLUSHING:'bb', STARTING:'by',
+  FAULT:'br',     IDLE:'bg2',    STOPPING:'bg2', UNKNOWN:'bg2'
+};
+const STATUS_COLOR = {
+  EXECUTED:'#4ade80', REJECTED:'#f87171',
+  TIMEOUT:'#fbbf24',  SENT:'#94a3b8'
+};
+
+function dev(){ return document.getElementById('dev').value; }
+
+async function poll(){
+  const d = dev();
+  try {
+    const r = await fetch('/api/status/'+d);
+    if(r.ok){
+      const s = await r.json();
+      const fsm = s.state || 'UNKNOWN';
+      const ob = document.getElementById('b-online');
+      ob.textContent = s.online ? 'ONLINE' : 'OFFLINE';
+      ob.className = 'badge '+(s.online ? 'bg' : 'br');
+      const fb = document.getElementById('b-fsm');
+      fb.textContent = fsm;
+      fb.className = 'badge '+(FSM[fsm]||'bg2');
+      document.getElementById('b-seen').textContent =
+        'Último contacto: '+( s.last_seen||'—' );
+    }
+  } catch(e){}
+
+  try {
+    const r = await fetch('/api/command/'+d);
+    if(r.ok){
+      const cmds = await r.json();
+      const el = document.getElementById('hist');
+      if(!cmds.length){
+        el.innerHTML = '<span class="meta">Sin comandos registrados</span>';
+      } else {
+        el.innerHTML = cmds.slice(0,5).map(c => {
+          const ts = (c.issued_at||'').replace('T',' ').slice(0,19);
+          const sc = STATUS_COLOR[c.status]||'#94a3b8';
+          const rej = c.reject_reason
+            ? '<span class="meta" style="color:#f87171">'+c.reject_reason+'</span>' : '';
+          return '<div class="crow">'
+            +'<span style="font-weight:700">'+c.cmd+'</span>'
+            +'<span style="color:'+sc+';font-weight:700">'+c.status+'</span>'
+            +'<span class="meta">'+ts+'</span>'
+            +rej+'</div>';
+        }).join('');
+      }
+    }
+  } catch(e){}
+
+  document.getElementById('ri').textContent =
+    '↻ '+new Date().toLocaleTimeString();
+}
+
+async function send(cmd){
+  const btns = document.querySelectorAll('button');
+  btns.forEach(b => b.disabled=true);
+  const box = document.getElementById('resp');
+  box.className = 'rbox'; box.textContent = 'Enviando '+cmd+'...';
+  try {
+    const r = await fetch('/api/command/'+dev(), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cmd})
+    });
+    const data = await r.json();
+    box.className = 'rbox '+(r.ok?'ok':'er');
+    box.textContent = JSON.stringify(data, null, 2);
+    if(r.ok) setTimeout(poll, 1500);
+  } catch(e){
+    box.className = 'rbox er';
+    box.textContent = 'Error de red: '+e.message;
+  } finally {
+    btns.forEach(b => b.disabled=false);
+  }
+}
+
+setInterval(poll, 5000);
+poll();
+</script>
+</body>
+</html>"""
+
+
+@api.route("/admin/panel", methods=["GET"])
+@require_basic_auth
+def admin_panel():
+    """
+    Admin command panel — HTML interface for manual device control.
+    Protected by HTTP Basic Auth (ADMIN_PANEL_USER / ADMIN_PANEL_PASS).
+    Auth disabled when ADMIN_PANEL_USER is empty (dev mode).
+
+    Reads device list from DB. Calls /api/status and /api/command
+    via fetch() — no MQTT access from the browser.
+    All command execution goes through CommandEngine as normal.
+    """
+    devices = [r[0] for r in db.fetchall(
+        "SELECT device_id FROM devices ORDER BY registered_at"
+    )]
+    if not devices:
+        return ("<h2 style='font-family:sans-serif;padding:2rem'>"
+                "No hay dispositivos registrados.</h2>"), 200
+    return render_template_string(_ADMIN_PANEL_HTML, devices=devices)
 
 
 def _start_api():
