@@ -283,6 +283,22 @@ GROUP BY device_id, DATE(time AT TIME ZONE 'America/Argentina/Buenos_Aires')
 ORDER BY day DESC;
 
 -- ============================================================
+-- Multi-cliente — v1
+-- ============================================================
+CREATE TABLE IF NOT EXISTS clients (
+    id              SERIAL       PRIMARY KEY,
+    name            TEXT         NOT NULL,
+    grafana_org_id  INTEGER,     -- ID de la Organization en Grafana
+    email           TEXT,
+    created_at      TIMESTAMPTZ  DEFAULT NOW()
+);
+
+-- Ownership de dispositivos
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS client_id    INTEGER REFERENCES clients(id);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS enabled      BOOLEAN DEFAULT TRUE;
+
+-- ============================================================
 -- TABLA: device_commands
 -- Command Engine v3 — lifecycle: SENT → RECEIVED → ACCEPTED
 --                                     → REJECTED | EXECUTED | TIMEOUT

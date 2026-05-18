@@ -1,0 +1,414 @@
+{
+  "title": "KAIROX Overview",
+  "uid": "kairox-overview",
+  "tags": [
+    "kairox",
+    "overview"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Equipos Online",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dfdcy982omdxce"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 3
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dfdcy982omdxce"
+          },
+          "dataset": "iot_db",
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    COUNT(*) FILTER (WHERE online AND NOW() - last_seen < INTERVAL '90 seconds') AS \"Online\",\n    COUNT(*) FILTER (WHERE NOT (online AND NOW() - last_seen < INTERVAL '90 seconds')) AS \"Offline\",\n    COUNT(*) AS \"Total\"\nFROM device_status s\nLEFT JOIN devices d ON s.device_id = d.device_id\nLEFT JOIN clients c ON d.client_id = c.id\nWHERE COALESCE(d.enabled, TRUE) = TRUE\n  AND (${__org.id} = 1 OR c.grafana_org_id = ${__org.id})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Online"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Offline"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "pluginVersion": "12.3.3"
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Equipos del cliente",
+      "description": "Click en el nombre del equipo para ver el detalle completo.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "dfdcy982omdxce"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 16
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "dfdcy982omdxce"
+          },
+          "dataset": "iot_db",
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    s.device_id,\n    COALESCE(d.display_name, s.device_id) AS \"Equipo\",\n    CASE\n        WHEN s.online AND NOW() - s.last_seen < INTERVAL '90 seconds' THEN 'ONLINE'\n        ELSE 'OFFLINE'\n    END AS \"Conectividad\",\n    COALESCE(s.state, '?')               AS \"FSM\",\n    COALESCE(s.last_severity, '-')        AS \"Severidad\",\n    COALESCE(s.biz_risk_level, '-')       AS \"Riesgo\",\n    ROUND(COALESCE(s.biz_liters_today, 0)::NUMERIC, 0) AS \"Litros hoy\",\n    ROUND(COALESCE(s.biz_fulfillment_pct, 0)::NUMERIC, 1) AS \"Cumplim. %\",\n    ROUND(COALESCE(s.efficiency, 0)::NUMERIC, 2) AS \"Eficiencia\",\n    COALESCE(s.health_status, '-')        AS \"Salud\",\n    EXTRACT(EPOCH FROM (NOW() - s.last_seen))::INT AS \"Seg sin se\u00f1al\"\nFROM device_status s\nLEFT JOIN devices d ON s.device_id = d.device_id\nLEFT JOIN clients c ON d.client_id = c.id\nWHERE COALESCE(d.enabled, TRUE) = TRUE\n  AND (${__org.id} = 1 OR c.grafana_org_id = ${__org.id})\nORDER BY s.online DESC, COALESCE(d.display_name, s.device_id)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Conectividad",
+            "desc": false
+          }
+        ]
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "device_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Equipo"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Ver detalle \u2192",
+                    "url": "/d/kairox-detail?orgId=${__org.id}&var-device=${__data.fields[\"device_id\"]}",
+                    "targetBlank": false
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 200
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conectividad"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ONLINE": {
+                        "color": "green",
+                        "text": "\ud83d\udfe2 ONLINE",
+                        "index": 0
+                      },
+                      "OFFLINE": {
+                        "color": "red",
+                        "text": "\ud83d\udd34 OFFLINE",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Riesgo"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "LOW": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "MEDIUM": {
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "HIGH": {
+                        "color": "orange",
+                        "index": 2
+                      },
+                      "CRITICAL": {
+                        "color": "red",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Salud"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "HEALTHY": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "WARNING": {
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "CRITICAL": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "UNKNOWN": {
+                        "color": "grey",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Litros hoy"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "L"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cumplim. %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Seg sin se\u00f1al"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 90
+                    },
+                    {
+                      "color": "red",
+                      "value": 300
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "pluginVersion": "12.3.3"
+    }
+  ]
+}
